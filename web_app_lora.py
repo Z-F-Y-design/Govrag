@@ -11,8 +11,8 @@ import asyncio
 import json
 
 # --- 离线运行环境变量 (好习惯) ---
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+#os.environ["TRANSFORMERS_OFFLINE"] = "1"
+#os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 # 初始化FastAPI应用
 app = FastAPI(title="政府文档智能问答系统", version="1.0.0")
@@ -53,7 +53,8 @@ class RAGSystem:
         
         # 3. 基础大语言模型 (Base LLM) 的本地文件夹路径
         #    (例如, 'Qwen/Qwen1.5-1.8B-Chat' 下载后保存的路径)
-        self.base_model_path = "project/models/qwen1.5-1.8b-chat"
+        #暂时在使用时下载，不保存在本地
+        self.base_model_path = "Qwen/Qwen1.5-1.8B-Chat"
         
         # 4. (核心) 你自己微调的 LoRA 模型所在的本地文件夹路径
         #    如果不想使用LoRA，只想用基础模型，请将此行设置为 None
@@ -67,7 +68,7 @@ class RAGSystem:
         self.load_indices()
         
         print(f"正在从本地加载嵌入模型: {self.emb_model_path}")
-        self.emb = SentenceTransformer(self.emb_model_path)
+        self.emb = SentenceTransformer(self.emb_model_path, trust_remote_code=True, local_files_only=True)
         
         print("正在加载语言模型...")
         self.load_llm()
@@ -101,20 +102,21 @@ class RAGSystem:
             
             print(f"从本地路径加载分词器和基础模型: {self.base_model_path}")
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.base_model_path, trust_remote_code=True
+                self.base_model_path, trust_remote_code=True, local_files_only=True
             )
             base_model = AutoModelForCausalLM.from_pretrained(
                 self.base_model_path,
                 device_map="auto",
                 torch_dtype=dtype,
                 trust_remote_code=True,
-                low_cpu_mem_usage=True
+                low_cpu_mem_usage=True,
+                # local_files_only=True
             )
             
             # 检查是否需要加载 LoRA 模型
             if self.lora_dir and os.path.exists(self.lora_dir):
                 print(f"检测到LoRA路径，正在加载并合并LoRA模型: {self.lora_dir}")
-                self.model = PeftModel.from_pretrained(base_model, self.lora_dir)
+                self.model = PeftModel.from_pretrained(base_model, self.lora_dir, local_files_only=True)
                 print("LoRA模型加载完成。")
             else:
                 print("未配置或未找到LoRA路径，将直接使用基础模型。")
@@ -253,4 +255,4 @@ if __name__ == "__main__":
     import uvicorn
     # 建议增加 reload=True 参数便于开发时调试，文件修改后服务会自动重启
     # 在生产环境中可以去掉 reload=True
-    uvicorn.run("web_app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("web_app_lora:app", host="0.0.0.0", port=8000, reload=True)
