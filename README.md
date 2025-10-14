@@ -75,6 +75,9 @@ pip install -r requirements.txt
 ```
 
 4. **准备模型文件**：
+```bash
+python initiate.py
+```
    - 下载基础模型到 `project/models/qwen1.5-1.8b-chat/`
    - 下载嵌入模型到 `project/models/bge-m3/`
    - (可选) 微调LoRA模型到 `project/models/qwen1.5-gov-lora/`
