@@ -255,4 +255,4 @@ if __name__ == "__main__":
     import uvicorn
     # 建议增加 reload=True 参数便于开发时调试，文件修改后服务会自动重启
     # 在生产环境中可以去掉 reload=True
-    uvicorn.run("web_app_lora:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("web_app_lora:app", host="127.0.0.1", port=8000, reload=True)
