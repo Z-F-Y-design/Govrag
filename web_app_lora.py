@@ -115,9 +115,72 @@ class RAGSystem:
 
         except Exception as e:
             raise RuntimeError(f"加载语言模型失败: {e}")
-    
-    def hybrid_search(self, query, topk_dense=40, topk_bm25=30, final_k=6):
-        """混合检索"""
+    def is_gov_related(self, question):
+        """
+        判断问题是否与政府治理相关
+        """
+        # 定义与政府治理相关的关键词
+        gov_keywords = [
+            "政府", "政策", "法规", "法律", "条例", "规定", "办法", "通知", "公告", "决定",
+            "规划", "计划", "方案", "措施", "制度", "体制", "机制", "体系", "改革", "发展",
+            "经济", "社会", "民生", "公共服务", "行政", "管理", "治理", "监督", "审计",
+            "财政", "税收", "预算", "资金", "投资", "项目", "工程", "建设", "城市", "农村",
+            "教育", "医疗", "卫生", "就业", "社保", "养老", "住房", "环保", "环境", "安全",
+            "公安", "司法", "法院", "检察院", "警察", "法律", "立法", "执法", "宪法", "刑法",
+            "民法", "行政法", "宪法", "人大", "政协", "国务院", "部门", "机构", "组织",
+            "选举", "民主", "政治", "权利", "权力", "公务员", "公职", "职责", "职能",
+            "审批", "许可", "登记", "备案", "检查", "处罚", "奖励", "表彰", "服务", "便民",
+            "政务", "公开", "透明", "信息", "数据", "数字化", "信息化", "互联网+", "电子",
+            "一带一路", "脱贫攻坚", "乡村振兴", "疫情防控", "公共卫生", "应急管理", "灾害",
+            "土地", "资源", "能源", "水利", "交通", "运输", "通信", "科技", "创新", "技术",
+            "文化", "旅游", "体育", "宗教", "民族", "人口", "统计", "普查", "标准", "质量",
+            "市场监管", "消费", "物价", "价格", "金融", "银行", "保险", "证券", "外汇",
+            "海关", "进出口", "贸易", "商务", "外资", "投资", "招商", "开发区", "自贸区",
+            "外交", "国际", "合作", "协议", "条约", "边界", "领事", "签证", "护照"
+        ]
+        
+        question_lower = question.lower()
+        
+        # 检查是否包含政府相关关键词
+        for keyword in gov_keywords:
+            if keyword in question_lower:
+                return True
+                
+        # 如果没有匹配到关键词，则使用模型判断
+        system_prompt = "你是一个分类器，判断用户问题是否与政府治理相关。如果相关，回答'是'，否则回答'否'。"
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"问题：{question}"}
+        ]
+        
+        prompt = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        
+        input_ids = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **input_ids,
+                max_new_tokens=10,
+                temperature=0.1,
+                do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+        
+        response_ids = outputs[0][len(input_ids['input_ids'][0]):]
+        result = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+        
+        return result.startswith("是")
+    def hybrid_search(self, query, topk_dense=40, topk_bm25=30, final_k=6, dense_weight=1):
+        """混合检索
+        Args:
+            query: 查询文本
+            topk_dense: 稠密检索返回的候选文档数量
+            topk_bm25: 稀疏检索返回的候选文档数量
+            final_k: 最终返回的文档数量
+            dense_weight: 稠密检索的权重 (0-1之间)，稀疏检索权重为 (1 - dense_weight)
+        """
         # 稠密检索
         qv = self.emb.encode([query], convert_to_numpy=True, normalize_embeddings=True)
         D, I = self.index.search(qv.astype("float32"), topk_dense)
@@ -130,17 +193,35 @@ class RAGSystem:
         bm25_hits = sorted([(i, float(bm25_scores[i])) for i in range(len(self.texts))], 
                           key=lambda x: x[1], reverse=True)[:topk_bm25]
 
-        # 结果融合 (RRF - Reciprocal Rank Fusion)
-        rrf_scores = {}
-        for rank, (doc_id, _) in enumerate(dense_hits):
-            if doc_id not in rrf_scores:
-                rrf_scores[doc_id] = 0
-            rrf_scores[doc_id] += 1 / (rank + 60)
+        filtered_dense_hits = []
+        for doc_id, score in dense_hits:
+            meta = self.metas[doc_id]
+            doc_name = meta.get("doc", "")
+            if not doc_name.startswith("19"):
+                filtered_dense_hits.append((doc_id, score))
         
-        for rank, (doc_id, _) in enumerate(bm25_hits):
+        filtered_bm25_hits = []
+        for doc_id, score in bm25_hits:
+            meta = self.metas[doc_id]
+            doc_name = meta.get("doc", "")
+            if not doc_name.startswith("19"):
+                filtered_bm25_hits.append((doc_id, score))
+
+        # 结果融合 (RRF - Reciprocal Rank Fusion) 带权重
+        rrf_scores = {}
+        sparse_weight = 1 - dense_weight
+        
+        # 稠密检索得分，根据权重调整
+        for rank, (doc_id, _) in enumerate(filtered_dense_hits):
             if doc_id not in rrf_scores:
                 rrf_scores[doc_id] = 0
-            rrf_scores[doc_id] += 1 / (rank + 60)
+            rrf_scores[doc_id] += dense_weight * (1 / (rank + 60))
+        
+        # 稀疏检索得分，根据权重调整
+        for rank, (doc_id, _) in enumerate(filtered_bm25_hits):
+            if doc_id not in rrf_scores:
+                rrf_scores[doc_id] = 0
+            rrf_scores[doc_id] += sparse_weight * (1 / (rank + 60))
             
         # 选择最终结果
         sorted_docs = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
@@ -180,6 +261,14 @@ class RAGSystem:
     async def ask(self, question, top_k=6):
         """处理用户提问"""
         start_time = asyncio.get_event_loop().time()
+        
+        if not self.is_gov_related(question):
+            processing_time = asyncio.get_event_loop().time() - start_time
+            return QueryResponse(
+                answer="不好意思，我暂时无法回答这个问题。\n可能原因包括：\n1. 该问题与政府治理无关；\n2. 我目前的知识库中没有相关信息；\n3. 问题过于宽泛或模糊，无法提供具体答案。\n\n我会继续学习，争取在未来能够帮助您解答更多类型的问题！",
+                sources=[],
+                processing_time=round(processing_time, 2)
+            )
         
         selected_ids, sources = self.hybrid_search(question, final_k=top_k)
         context_texts = [self.texts[i] for i in selected_ids]
