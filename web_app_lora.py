@@ -6,13 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from sentence_transformers import SentenceTransformer
-from peft import PeftModel  # <--- 新增导入
+from peft import PeftModel 
 import asyncio
 import json
 
-# --- 离线运行环境变量 (好习惯) ---
-#os.environ["TRANSFORMERS_OFFLINE"] = "1"
-#os.environ["HF_DATASETS_OFFLINE"] = "1"
+# --- 离线运行环境变量  ---
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 # 初始化FastAPI应用
 app = FastAPI(title="政府文档智能问答系统", version="1.0.0")
@@ -40,25 +40,17 @@ rag_system = None
 
 class RAGSystem:
     def __init__(self):
-        # ==================================================================
-        # --- 【用户配置区】请在这里修改为你的本地模型路径 ---
-        # ==================================================================
-        
+        """初始化RAG系统"""
         # 1. 索引文件所在的目录
         self.index_dir = "project/index"
         
         # 2. 嵌入模型 (Embedding Model) 的本地文件夹路径
-        #    (例如, 'BAAI/bge-m3' 下载后保存的路径)
         self.emb_model_path = "project/models/bge-m3"
         
         # 3. 基础大语言模型 (Base LLM) 的本地文件夹路径
-        #    (例如, 'Qwen/Qwen1.5-1.8B-Chat' 下载后保存的路径)
-        #暂时在使用时下载，不保存在本地
-        self.base_model_path = "Qwen/Qwen1.5-1.8B-Chat"
+        self.base_model_path = "project/models/Qwen1.5-1.8B-Chat"
         
-        # 4. (核心) 你自己微调的 LoRA 模型所在的本地文件夹路径
-        #    如果不想使用LoRA，只想用基础模型，请将此行设置为 None
-        #    例如: self.lora_dir = None
+        # 4. 自己微调的 LoRA 模型所在的本地文件夹路径
         self.lora_dir = "project/models/qwen1.5-gov-lora"
         
         # ==================================================================
@@ -79,7 +71,7 @@ class RAGSystem:
         """加载所有索引文件"""
         try:
             self.index = faiss.read_index(os.path.join(self.index_dir, "faiss.index"))
-            # 注意：原代码中似乎没有用到 vecs，如果你的 hybrid_search 需要它，请取消下面的注释
+    
             # self.vecs = np.load(os.path.join(self.index_dir, "dense.npy"))
             
             with open(os.path.join(self.index_dir, "meta.pkl"), "rb") as r:
@@ -93,7 +85,6 @@ class RAGSystem:
     
     def load_llm(self):
         """
-        【已修改】加载语言模型。
         如果配置了 LoRA 路径，则加载基础模型并应用 LoRA 适配器。
         否则，直接加载基础模型。
         """
@@ -140,12 +131,11 @@ class RAGSystem:
                           key=lambda x: x[1], reverse=True)[:topk_bm25]
 
         # 结果融合 (RRF - Reciprocal Rank Fusion)
-        # 这种融合方式比之前的加权求和更鲁棒
         rrf_scores = {}
         for rank, (doc_id, _) in enumerate(dense_hits):
             if doc_id not in rrf_scores:
                 rrf_scores[doc_id] = 0
-            rrf_scores[doc_id] += 1 / (rank + 60) # k=60 是一个常用参数
+            rrf_scores[doc_id] += 1 / (rank + 60)
         
         for rank, (doc_id, _) in enumerate(bm25_hits):
             if doc_id not in rrf_scores:
@@ -173,8 +163,8 @@ class RAGSystem:
     
     def build_prompt(self, question, context_texts):
         """构建提示词"""
-        system = "你是政府公文助手。请仅依据下列资料回答问题，如果资料无法得出结论，请直接说“根据现有资料，无法回答该问题”。回答应采用严谨、正式的书面语，首先给出核心结论，然后分点进行详细阐述。在回答的末尾，必须以'来源：[编号]'的格式清晰地列出所有引用的资料编号。"
-        
+        system = "你是政府公文助手。请仅依据下列资料回答问题，\n如果资料无法得出结论，请直接说“根据现有资料，无法回答该问题”。回答应采用严谨、正式的书面语，首先给出核心结论，然后分点进行详细阐述。在回答的末尾，必须以'来源：[编号]'的格式清晰地列出所有引用的资料编号。如果在问题中出现明确的时间或地区要求，请特别注意资料来源中的年份和地区信息匹配，确保回答符合这些要求！！！"
+
         context = "\n\n".join([f"[{i+1}] {text}" for i, text in enumerate(context_texts)])
         
         messages = [
@@ -201,13 +191,12 @@ class RAGSystem:
             outputs = self.model.generate(
                 **input_ids,
                 max_new_tokens=800,
-                temperature=0.1, # 对于正式问答，温度可以设低一些以保证确定性
-                top_p=0.9,
+                temperature=0.2, 
+                top_p=0.8,
                 do_sample=True,
                 pad_token_id=self.tokenizer.eos_token_id
             )
         
-        # 解码时，只解码生成的部分，跳过输入的prompt
         response_ids = outputs[0][len(input_ids['input_ids'][0]):]
         answer = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
         
@@ -239,7 +228,6 @@ async def ask_question(request: QueryRequest):
         response = await rag_system.ask(request.question, request.top_k)
         return response
     except Exception as e:
-        # 在服务器日志中打印详细错误，以便调试
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"处理问题时出错: {str(e)}")
@@ -248,11 +236,12 @@ async def ask_question(request: QueryRequest):
 async def health_check():
     return {"status": "healthy", "model_loaded": rag_system is not None}
 
+async def favicon():
+    return FileResponse("static/favicon.ico")
+
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
-    import uvicorn
-    # 建议增加 reload=True 参数便于开发时调试，文件修改后服务会自动重启
-    # 在生产环境中可以去掉 reload=True
+    import uvicorn  
     uvicorn.run("web_app_lora:app", host="127.0.0.1", port=8000, reload=True)
