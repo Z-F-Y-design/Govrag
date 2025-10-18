@@ -74,15 +74,25 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
-4. **准备模型文件**：
+4.1 **直接使用**：
+### 启动服务
+
+**启动LoRA增强版本**：
+```bash
+python web_app_lora.py
+```
+
+**访问Web界面**：打开浏览器访问 `http://localhost:8000`
+
+4.2 **复现步骤/重新训练**：
 ```bash
 python initiate.py
 ```
    - 下载基础模型到 `project/models/qwen1.5-1.8b-chat/`
    - 下载嵌入模型到 `project/models/bge-m3/`
-   - (可选) 微调LoRA模型到 `project/models/qwen1.5-gov-lora/`
+   - 微调LoRA模型到 `project/models/qwen1.5-gov-lora/`
 
-### 数据准备
+### 数据准备(已完成)
 
 1. 将政府文档放置在指定目录
 2. 运行文档处理脚本：
@@ -95,19 +105,14 @@ python project/step1_prepare_chunks.py
 python project/step2_build_index.py
 ```
 
-### 模型微调（可选）
+### 模型微调
 
-如果需要针对特定领域进行微调：
+
 ```bash
 python project/step5_SFT_lora.py
 ```
 
 ### 启动服务
-
-**启动基础版本**：
-```bash
-python web_app.py
-```
 
 **启动LoRA增强版本**：
 ```bash
